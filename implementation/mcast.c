@@ -15,15 +15,18 @@ static  char    Spread_name[80];
 static  mailbox Mbox;
 static  char    Private_group[MAX_GROUP_NAME];
 static  int     To_exit = 0;
-static  int     transfer = 0; //when it = 1 we can begin transferring data
+static  int     transfer = 1; //when it = 1 we can begin transferring data
 static  int     num_processes;
 static  int     packet_index = 0; //the number of pkts it sent
 static  int     num_msgs;
 static  int     machine_index;
+static  int     final_msgs = 0;
+static  int     rec_msgs = 0; //resets every epoque/transfer
 
 #define MAX_VSSETS      10
 #define MAX_MESSLEN     102400 //should probably be smaller/ the size of our packets
 #define MAX_MEMBERS     10
+
 char     sender[MAX_GROUP_NAME];
 static  void    Read_message();
 static  void    Send_message();
@@ -83,6 +86,13 @@ int main(int argc, char **argv)
     ret = SP_join( Mbox, group ); //make sure they SP_leave(Mbox, group); at end
     if( ret < 0 ) SP_error( ret );
     
+    //creates the destination file for writing
+    char file_name[ sizeof(machine_index) ];
+    sprintf ( file_name, "%d", machine_index ); //converts machine_index to a string
+    if ( (fw = fopen( (strcat(file_name,".txt") ) , "w") ) == NULL ) {
+        perror("fopen");
+        exit(0);
+    }
     /* wait until theres num_proccesses on the SPREAD network before data transfers begin */
     E_handle_events();
 }
@@ -93,13 +103,18 @@ static  void    Send_message()
 
     //send a burst of messages
     int burst = 0;
-    while ( packet_index < num_msgs && burst < WINDOW) 
+    while ( packet_index <= num_msgs && burst < WINDOW) 
     {
-        packet_index++;
         //send a packet msg
         data_pkt *new_pkt = malloc(sizeof(data_pkt));
-        new_pkt->head.tag = 0;
-        new_pkt->head.machine_index = machine_index;
+        
+        if (packet_index == num_msgs) { //final pkt
+            new_pkt->tag = 1;
+        } else {
+            new_pkt->tag = 0;
+        }
+        packet_index++;
+        new_pkt->machine_index = machine_index;
         new_pkt->pkt_index = packet_index;
         new_pkt->rand_num = rand() % 1000000 + 1; //generates random number 1 to 1 mil
         printf("\nsent: pkt_index = %d,rand_num = %d", new_pkt->pkt_index, new_pkt->rand_num);
@@ -109,14 +124,11 @@ static  void    Send_message()
             SP_error( ret );
             Bye();
         } else {
-            printf("\nI sent a pkt\n");
+            printf("\nI sent a pkt, pkt_index = %d\n", new_pkt->pkt_index);
         }
         burst--;
     }
-
     fflush(stdout);
-
-
 }
 
 static  void    Read_message() 
@@ -137,10 +149,7 @@ static  void    Read_message()
     int             ret;
 
     char *buf = malloc(sizeof(data_pkt));
-    header *head;
-    head = (header*) buf;
-    //mess should be changed to a packet type!
-    //max_groups(parameter 4), i set to 1 because we only have this group
+    data_pkt *pkt = (data_pkt*) buf;
     ret = SP_receive( Mbox, &service_type, sender, 10, &num_groups, target_groups, &mess_type, &endian_mismatch, sizeof(data_pkt), buf);
      //^^service_type should always be AGREED_MESS
     //num_groups says the # of current members
@@ -177,18 +186,26 @@ static  void    Read_message()
         printf("message from %s, of type %d, (endian %d) to %d groups \n(%d bytes): %s\n",
             sender, mess_type, endian_mismatch, num_groups, ret, buf ); //we want to read it into a packet
 
-        /* switch case based on head.tag */
-        switch ( head->tag )
+        rec_msgs++;
+        /* switch case based on pkt->tag */
+        switch ( pkt->tag )
         {
             case 0: ; //data_pkt
-                printf("data pkt\n");
+                //write rand_num to file
+                char buf_write[sizeof(pkt->rand_num)];
+                sprintf(buf_write, "%d", pkt->rand_num); //converts int to a str before writing it
+                fprintf(fw, "%2d, %8d, %8d\n", pkt->machine_index, pkt->pkt_index, pkt->rand_num);
+                fflush(fw);
                 break;
-            case 2: ; //final_pkt
-                printf("final pkt\n");
+            case 1: ; //final_pkt
+                final_msgs++;
+                if (final_msgs == num_processes) { 
+                    free(pkt);
+                    Bye();
+                }
                 break;
         }
-
-        free(buf);
+        free(pkt);
 
     }else if( Is_membership_mess( service_type ) ) 
     {
@@ -250,14 +267,12 @@ static  void    Read_message()
     fflush(stdout);
 
     //checks if we have num_processes yet and can begin transferring data
-    if ( num_groups == num_processes ) 
+    if ( num_groups == num_processes )  
     {
         printf("\nGROUP HAS CORRECT(%d) MEMBERS & CAN NOW BEGIN TRANSMITTING DATA\n", num_groups);
-        transfer = 1;
-        
+        //this should happen when the network 'has room'
         Send_message();
         //send burst of packets, then turn our transfer to 0 -> then once we receive, we turn our transfer to 1 to trigger this
-        //change the priority? change the trigger?
         //call send_msg somehow ...
     }
 
@@ -277,4 +292,12 @@ static void Bye()
     SP_disconnect( Mbox );
     exit(0);
 }
+/*
+static double threshhold() 
+{
+    //checking to see if there is room on the network to send or we should wait
+    int tot = num_processes*WINDOW; //maxium packets on the network at any given time
+    int cur = *WINDOW(num_processes - final_msgs); //considers the num of processes finished sending msgs
 
+    return cur/tot;
+}*/
