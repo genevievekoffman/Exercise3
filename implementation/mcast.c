@@ -1,10 +1,13 @@
 #define MAX_MACHINES 10
+#define WINDOW 15
 
 #include "sp.h"
+#include "packets.h"
 #include <sys/types.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include<time.h>
 
 static  char    group[] = "group_GEN"; 
 static  char    User[80];
@@ -13,7 +16,10 @@ static  mailbox Mbox;
 static  char    Private_group[MAX_GROUP_NAME];
 static  int     To_exit = 0;
 static  int     transfer = 0; //when it = 1 we can begin transferring data
-static  int      num_processes;
+static  int     num_processes;
+static  int     packet_index = 0; //the number of pkts it sent
+static  int     num_msgs;
+static  int     machine_index;
 
 #define MAX_VSSETS      10
 #define MAX_MESSLEN     102400 //should probably be smaller/ the size of our packets
@@ -23,6 +29,8 @@ static  void    Read_message();
 static  void    Send_message();
 static  void    Usage( int argc, char *argv[] );
 static  void    Bye();
+
+FILE               *fw; // pointer to dest file, which we write
 
 int main(int argc, char **argv)
 {
@@ -37,10 +45,10 @@ int main(int argc, char **argv)
     }
 
     char *str = argv[1];
-    int num_msgs = atoi(str);
+    num_msgs = atoi(str);
     
     str = argv[2];
-    int machine_index = atoi(str); //converts numeric str to int
+    machine_index = atoi(str); //converts numeric str to int
     if ( machine_index > MAX_MACHINES || machine_index < 1 ) {
         printf("invalid machine_index\n");
         exit(0);
@@ -69,7 +77,7 @@ int main(int argc, char **argv)
     E_init();
     
     //sending a msg has lowest priority & reading a msg has highest priority
-    E_attach_fd( 0, READ_FD, Send_message, 0, NULL, LOW_PRIORITY );
+    E_attach_fd( transfer, READ_FD, Send_message, 0, NULL, LOW_PRIORITY );
     E_attach_fd( Mbox, READ_FD, Read_message, 0, NULL, HIGH_PRIORITY ); 
     /* must first join the same group */
     ret = SP_join( Mbox, group ); //make sure they SP_leave(Mbox, group); at end
@@ -81,41 +89,68 @@ int main(int argc, char **argv)
 
 static  void    Send_message()
 {
-    printf("SENDING A MSG FUNC\n");
+    srand ( time(NULL) ); //init random num generator
+
+    //send a burst of messages
+    int burst = 0;
+    while ( packet_index < num_msgs && burst < WINDOW) 
+    {
+        packet_index++;
+        //send a packet msg
+        data_pkt *new_pkt = malloc(sizeof(data_pkt));
+        new_pkt->head.tag = 0;
+        new_pkt->head.machine_index = machine_index;
+        new_pkt->pkt_index = packet_index;
+        new_pkt->rand_num = rand() % 1000000 + 1; //generates random number 1 to 1 mil
+        printf("\nsent: pkt_index = %d,rand_num = %d", new_pkt->pkt_index, new_pkt->rand_num);
+        int ret = SP_multicast( Mbox, AGREED_MESS, group, 2, sizeof(data_pkt), (const char*)new_pkt); //wants a const char
+        free(new_pkt);
+        if( ret < 0 ){
+            SP_error( ret );
+            Bye();
+        } else {
+            printf("\nI sent a pkt\n");
+        }
+        burst--;
+    }
+
     fflush(stdout);
+
+
 }
 
 static  void    Read_message() 
 {
-    printf("READING A MSG FUNC\n");
-    static  char     mess[MAX_MESSLEN];
-    char     target_groups[MAX_MEMBERS][MAX_GROUP_NAME];
-    membership_info  memb_info;
-    int      service_type;
-    int16    mess_type;
-    int      endian_mismatch;
-    int      num_groups; //should be 1
-    vs_set_info      vssets[MAX_VSSETS];
+    static  char    mess[MAX_MESSLEN];
+    char            target_groups[MAX_MEMBERS][MAX_GROUP_NAME];
+    membership_info memb_info;
+    int             service_type;
+    int16           mess_type;
+    int             endian_mismatch;
+    int             num_groups; //should be 1
+    vs_set_info     vssets[MAX_VSSETS];
+    
     service_type = 0; //SHOULD ALWAYS BE AGREEED RIGHT
-    int      num_vs_sets;
-    unsigned int     my_vsset_index;
-    char     members[MAX_MEMBERS][MAX_GROUP_NAME];
-    int ret;
+    int             num_vs_sets;
+    unsigned int    my_vsset_index;
+    char            members[MAX_MEMBERS][MAX_GROUP_NAME];
+    int             ret;
 
+    char *buf = malloc(sizeof(data_pkt));
+    header *head;
+    head = (header*) buf;
     //mess should be changed to a packet type!
     //max_groups(parameter 4), i set to 1 because we only have this group
-     ret = SP_receive( Mbox, &service_type, sender, 10, &num_groups, target_groups, &mess_type, &endian_mismatch, sizeof(mess), mess );
+    ret = SP_receive( Mbox, &service_type, sender, 10, &num_groups, target_groups, &mess_type, &endian_mismatch, sizeof(data_pkt), buf);
      //^^service_type should always be AGREED_MESS
-        
     //num_groups says the # of current members
 
      printf("\n============================\n");
-     if( ret < 0 )
-     {
+     if( ret < 0 ) {
         if ( (ret == GROUPS_TOO_SHORT) || (ret == BUFFER_TOO_SHORT) ) {
             service_type = DROP_RECV;
             printf("\n========Buffers or Groups too Short=======\n");
-            ret = SP_receive( Mbox, &service_type, sender, 10, &num_groups, target_groups, &mess_type, &endian_mismatch, sizeof(mess), mess );
+            ret = SP_receive( Mbox, &service_type, sender, 10, &num_groups, target_groups, &mess_type, &endian_mismatch, sizeof(data_pkt), buf);
         }
     }
     
@@ -140,10 +175,24 @@ static  void    Read_message()
         else if( Is_agreed_mess(     service_type ) ) printf("received AGREED "); //should always be this ...
         else if( Is_safe_mess(       service_type ) ) printf("received SAFE ");
         printf("message from %s, of type %d, (endian %d) to %d groups \n(%d bytes): %s\n",
-            sender, mess_type, endian_mismatch, num_groups, ret, mess );
+            sender, mess_type, endian_mismatch, num_groups, ret, buf ); //we want to read it into a packet
+
+        /* switch case based on head.tag */
+        switch ( head->tag )
+        {
+            case 0: ; //data_pkt
+                printf("data pkt\n");
+                break;
+            case 2: ; //final_pkt
+                printf("final pkt\n");
+                break;
+        }
+
+        free(buf);
+
     }else if( Is_membership_mess( service_type ) ) 
     {
-        ret = SP_get_memb_info( mess, service_type, &memb_info );
+        ret = SP_get_memb_info( buf, service_type, &memb_info );
         if (ret < 0) 
         {
             printf("BUG: membership message does not have valid body\n");
@@ -205,6 +254,10 @@ static  void    Read_message()
     {
         printf("\nGROUP HAS CORRECT(%d) MEMBERS & CAN NOW BEGIN TRANSMITTING DATA\n", num_groups);
         transfer = 1;
+        
+        Send_message();
+        //send burst of packets, then turn our transfer to 0 -> then once we receive, we turn our transfer to 1 to trigger this
+        //change the priority? change the trigger?
         //call send_msg somehow ...
     }
 
@@ -224,7 +277,4 @@ static void Bye()
     SP_disconnect( Mbox );
     exit(0);
 }
-
-
-
 
