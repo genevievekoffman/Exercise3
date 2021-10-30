@@ -20,6 +20,8 @@ static  int     num_processes;
 static  int     packet_index = 0; //the number of pkts it sent
 static  int     num_msgs;
 static  int     machine_index;
+static  int     final_msgs = 0; //num of final msgs recieved
+static  int     recv_msgs = 0; //num of final msgs recieved
 
 #define MAX_VSSETS      10
 #define MAX_MESSLEN     102400 //should probably be smaller/ the size of our packets
@@ -74,6 +76,14 @@ int main(int argc, char **argv)
     }
     printf("User: connected to %s with private group %s\n", Spread_name, Private_group );
     
+    //creates the destination file for writing
+    char file_name[ sizeof(machine_index) ];
+    sprintf ( file_name, "%d", machine_index ); //converts machine_index to a string
+    if ( (fw = fopen( (strcat(file_name,".txt") ) , "w") ) == NULL ) {
+        perror("fopen");
+        exit(0);
+    }
+
     E_init();
     
     //sending a msg has lowest priority & reading a msg has highest priority
@@ -92,30 +102,29 @@ static  void    Send_message()
     srand ( time(NULL) ); //init random num generator
 
     //send a burst of messages
-    int burst = 0;
-    while ( packet_index < num_msgs && burst < WINDOW) 
+    int burst = WINDOW;
+    while ( packet_index+1 <= num_msgs+1 && burst > 0) 
     {
         packet_index++;
         //send a packet msg
         data_pkt *new_pkt = malloc(sizeof(data_pkt));
-        new_pkt->head.tag = 0;
-        new_pkt->head.machine_index = machine_index;
+        if (packet_index == num_msgs+1) new_pkt->tag = 1;
+        else new_pkt->tag = 0;
+        new_pkt->machine_index = machine_index;
         new_pkt->pkt_index = packet_index;
         new_pkt->rand_num = rand() % 1000000 + 1; //generates random number 1 to 1 mil
-        printf("\nsent: pkt_index = %d,rand_num = %d", new_pkt->pkt_index, new_pkt->rand_num);
+        //printf("\nsent: pkt_index = %d,rand_num = %d", new_pkt->pkt_index, new_pkt->rand_num);
         int ret = SP_multicast( Mbox, AGREED_MESS, group, 2, sizeof(data_pkt), (const char*)new_pkt); //wants a const char
         free(new_pkt);
         if( ret < 0 ){
             SP_error( ret );
             Bye();
         } else {
-            printf("\nI sent a pkt\n");
+            //printf("\nI sent a pkt\n");
         }
         burst--;
     }
-
     fflush(stdout);
-
 
 }
 
@@ -137,15 +146,13 @@ static  void    Read_message()
     int             ret;
 
     char *buf = malloc(sizeof(data_pkt));
-    header *head;
-    head = (header*) buf;
     //mess should be changed to a packet type!
     //max_groups(parameter 4), i set to 1 because we only have this group
     ret = SP_receive( Mbox, &service_type, sender, 10, &num_groups, target_groups, &mess_type, &endian_mismatch, sizeof(data_pkt), buf);
      //^^service_type should always be AGREED_MESS
-    //num_groups says the # of current members
+    data_pkt *pkt = (data_pkt*) buf;
 
-     printf("\n============================\n");
+     //printf("\n============================\n");
      if( ret < 0 ) {
         if ( (ret == GROUPS_TOO_SHORT) || (ret == BUFFER_TOO_SHORT) ) {
             service_type = DROP_RECV;
@@ -168,6 +175,7 @@ static  void    Read_message()
     if( Is_regular_mess( service_type ) )
     {   
         mess[ret] = 0;
+        /*
         if     ( Is_unreliable_mess( service_type ) ) printf("received UNRELIABLE ");
         else if( Is_reliable_mess(   service_type ) ) printf("received RELIABLE ");
         else if( Is_fifo_mess(       service_type ) ) printf("received FIFO ");
@@ -176,15 +184,21 @@ static  void    Read_message()
         else if( Is_safe_mess(       service_type ) ) printf("received SAFE ");
         printf("message from %s, of type %d, (endian %d) to %d groups \n(%d bytes): %s\n",
             sender, mess_type, endian_mismatch, num_groups, ret, buf ); //we want to read it into a packet
-
+        */
         /* switch case based on head.tag */
-        switch ( head->tag )
+        switch ( pkt->tag )
         {
             case 0: ; //data_pkt
-                printf("data pkt\n");
+                //printf("data pkt\n");
+                recv_msgs++;
+                char buf_write[sizeof(pkt->rand_num)];
+                sprintf(buf_write, "%d", pkt->rand_num);
+                fprintf(fw, "%2d, %8d, %8d\n", pkt->machine_index, pkt->pkt_index, pkt->rand_num);
                 break;
-            case 2: ; //final_pkt
-                printf("final pkt\n");
+            case 1: ; //final_pkt
+                //printf("final pkt\n");
+                final_msgs++;
+                if (final_msgs == num_processes) Bye();
                 break;
         }
 
@@ -238,6 +252,16 @@ static  void    Read_message()
                         printf("\t%s\n", members[j] );
                 }
             }
+            
+            //only when there are membership changes??
+            if ( num_groups == num_processes ) 
+            {
+                printf("\nGROUP HAS CORRECT(%d) MEMBERS & CAN NOW BEGIN TRANSMITTING DATA\n", num_groups);
+                transfer = 1;
+                //first burst
+                Send_message();
+            }
+
         } else if (Is_transition_mess(   service_type ) ) {
             printf("received TRANSITIONAL membership for group %s\n", sender );
         } else if( Is_caused_leave_mess( service_type ) ){
@@ -245,16 +269,13 @@ static  void    Read_message()
         } else printf("received incorrecty membership message of type 0x%x\n", service_type );
     
     } else printf("received message of unknown message type 0x%x with ret %d\n", service_type, ret);
-    printf("\n");
-    printf("User> ");
+    //printf("\n");
+    //printf("User> ");
     fflush(stdout);
 
     //checks if we have num_processes yet and can begin transferring data
-    if ( num_groups == num_processes ) 
-    {
-        printf("\nGROUP HAS CORRECT(%d) MEMBERS & CAN NOW BEGIN TRANSMITTING DATA\n", num_groups);
-        transfer = 1;
-        
+    if (transfer && recv_msgs == WINDOW * (num_processes-final_msgs)) {    
+        recv_msgs = 0;
         Send_message();
         //send burst of packets, then turn our transfer to 0 -> then once we receive, we turn our transfer to 1 to trigger this
         //change the priority? change the trigger?
