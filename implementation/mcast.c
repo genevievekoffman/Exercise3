@@ -12,6 +12,9 @@ static  char    Spread_name[80];
 static  mailbox Mbox;
 static  char    Private_group[MAX_GROUP_NAME];
 static  int     To_exit = 0;
+static  int     transfer = 0; //when it = 1 we can begin transferring data
+static  int      num_processes;
+
 #define MAX_VSSETS      10
 #define MAX_MESSLEN     102400 //should probably be smaller/ the size of our packets
 #define MAX_MEMBERS     10
@@ -44,7 +47,7 @@ int main(int argc, char **argv)
     }
 
     str = argv[3];
-    int num_processes = atoi(str);
+    num_processes = atoi(str);
     if ( num_processes > MAX_MACHINES || num_processes < 1 ) {
         printf("invalid num_processes\n");
         exit(0);
@@ -65,31 +68,20 @@ int main(int argc, char **argv)
     
     E_init();
     
-    //reading a message has highest priority
+    //sending a msg has lowest priority & reading a msg has highest priority
     E_attach_fd( 0, READ_FD, Send_message, 0, NULL, LOW_PRIORITY );
-    E_attach_fd( Mbox, READ_FD, Read_message, 0, NULL, HIGH_PRIORITY );
-    //sending a msg has lowest priority
-    //E_attach_fd( Mbox, READ_FD, Read_message, 0, NULL, HIGH_PRIORITY );
-
+    E_attach_fd( Mbox, READ_FD, Read_message, 0, NULL, HIGH_PRIORITY ); 
     /* must first join the same group */
-    //ret = SP_join( Mbox, group ); 
-    //if( ret < 0 ) SP_error( ret );
-
-    /* wait until theres num_proccesses on the SPREAD network before data transfers begin */
     ret = SP_join( Mbox, group ); //make sure they SP_leave(Mbox, group); at end
     if( ret < 0 ) SP_error( ret );
     
+    /* wait until theres num_proccesses on the SPREAD network before data transfers begin */
     E_handle_events();
 }
 
 static  void    Send_message()
 {
-    //printf("SENDING A MSG FUNC\n");
-
-    /* must first join the same group */
-    
-    //int ret = SP_join( Mbox, group ); //make sure they SP_leave(Mbox, group); at end
-    //if( ret < 0 ) SP_error( ret );
+    printf("SENDING A MSG FUNC\n");
     fflush(stdout);
 }
 
@@ -112,15 +104,18 @@ static  void    Read_message()
 
     //mess should be changed to a packet type!
     //max_groups(parameter 4), i set to 1 because we only have this group
-     ret = SP_receive( Mbox, &service_type, sender, 1, &num_groups, target_groups, &mess_type, &endian_mismatch, sizeof(mess), mess );
+     ret = SP_receive( Mbox, &service_type, sender, 10, &num_groups, target_groups, &mess_type, &endian_mismatch, sizeof(mess), mess );
      //^^service_type should always be AGREED_MESS
+        
+    //num_groups says the # of current members
+
      printf("\n============================\n");
      if( ret < 0 )
      {
         if ( (ret == GROUPS_TOO_SHORT) || (ret == BUFFER_TOO_SHORT) ) {
             service_type = DROP_RECV;
             printf("\n========Buffers or Groups too Short=======\n");
-            ret = SP_receive( Mbox, &service_type, sender, 1, &num_groups, target_groups, &mess_type, &endian_mismatch, sizeof(mess), mess );
+            ret = SP_receive( Mbox, &service_type, sender, 10, &num_groups, target_groups, &mess_type, &endian_mismatch, sizeof(mess), mess );
         }
     }
     
@@ -204,6 +199,15 @@ static  void    Read_message()
     printf("\n");
     printf("User> ");
     fflush(stdout);
+
+    //checks if we have num_processes yet and can begin transferring data
+    if ( num_groups == num_processes ) 
+    {
+        printf("\nGROUP HAS CORRECT(%d) MEMBERS & CAN NOW BEGIN TRANSMITTING DATA\n", num_groups);
+        transfer = 1;
+        //call send_msg somehow ...
+    }
+
 }
 
 static  void    Usage(int argc, char *argv[])
