@@ -15,7 +15,7 @@ static  char    Spread_name[80];
 static  mailbox Mbox;
 static  char    Private_group[MAX_GROUP_NAME];
 static  int     To_exit = 0;
-static  int     transfer = 0; //when it = 1 we can begin transferring data
+static  int     transfer = 1; //when it = 1 we can begin transferring data
 static  int     num_processes;
 static  int     packet_index = 0; //the number of pkts it sent
 static  int     num_msgs;
@@ -26,6 +26,7 @@ static  int     recv_msgs = 0; //num of final msgs recieved
 #define MAX_VSSETS      10
 #define MAX_MESSLEN     102400 //should probably be smaller/ the size of our packets
 #define MAX_MEMBERS     10
+
 char     sender[MAX_GROUP_NAME];
 static  void    Read_message();
 static  void    Send_message();
@@ -76,14 +77,6 @@ int main(int argc, char **argv)
     }
     printf("User: connected to %s with private group %s\n", Spread_name, Private_group );
     
-    //creates the destination file for writing
-    char file_name[ sizeof(machine_index) ];
-    sprintf ( file_name, "%d", machine_index ); //converts machine_index to a string
-    if ( (fw = fopen( (strcat(file_name,".txt") ) , "w") ) == NULL ) {
-        perror("fopen");
-        exit(0);
-    }
-
     E_init();
     
     //sending a msg has lowest priority & reading a msg has highest priority
@@ -93,6 +86,13 @@ int main(int argc, char **argv)
     ret = SP_join( Mbox, group ); //make sure they SP_leave(Mbox, group); at end
     if( ret < 0 ) SP_error( ret );
     
+    //creates the destination file for writing
+    char file_name[ sizeof(machine_index) ];
+    sprintf ( file_name, "%d", machine_index ); //converts machine_index to a string
+    if ( (fw = fopen( (strcat(file_name,".txt") ) , "w") ) == NULL ) {
+        perror("fopen");
+        exit(0);
+    }
     /* wait until theres num_proccesses on the SPREAD network before data transfers begin */
     E_handle_events();
 }
@@ -105,8 +105,8 @@ static  void    Send_message()
     int burst = WINDOW;
     while ( packet_index+1 <= num_msgs+1 && burst > 0) 
     {
-        packet_index++;
         //send a packet msg
+        packet_index++;
         data_pkt *new_pkt = malloc(sizeof(data_pkt));
         if (packet_index == num_msgs+1) new_pkt->tag = 1;
         else new_pkt->tag = 0;
@@ -120,12 +120,11 @@ static  void    Send_message()
             SP_error( ret );
             Bye();
         } else {
-            //printf("\nI sent a pkt\n");
+            //printf("\nI sent a pkt, pkt_index = %d\n", new_pkt->pkt_index);
         }
         burst--;
     }
     fflush(stdout);
-
 }
 
 static  void    Read_message() 
@@ -201,8 +200,7 @@ static  void    Read_message()
                 if (final_msgs == num_processes) Bye();
                 break;
         }
-
-        free(buf);
+        free(pkt);
 
     }else if( Is_membership_mess( service_type ) ) 
     {
@@ -276,9 +274,9 @@ static  void    Read_message()
     //checks if we have num_processes yet and can begin transferring data
     if (transfer && recv_msgs == WINDOW * (num_processes-final_msgs)) {    
         recv_msgs = 0;
+        //this should happen when the network 'has room'
         Send_message();
         //send burst of packets, then turn our transfer to 0 -> then once we receive, we turn our transfer to 1 to trigger this
-        //change the priority? change the trigger?
         //call send_msg somehow ...
     }
 
@@ -298,4 +296,12 @@ static void Bye()
     SP_disconnect( Mbox );
     exit(0);
 }
+/*
+static double threshhold() 
+{
+    //checking to see if there is room on the network to send or we should wait
+    int tot = num_processes*WINDOW; //maxium packets on the network at any given time
+    int cur = *WINDOW(num_processes - final_msgs); //considers the num of processes finished sending msgs
 
+    return cur/tot;
+}*/
