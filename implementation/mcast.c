@@ -24,6 +24,8 @@ static  int     final_msgs = 0; //num of final msgs recieved
 static  int     recv_msgs = 0; //num of final msgs recieved
 static  int     extra_msgs = 0; //num of final msgs recieved
 
+static data_pkt *new_pkt;
+static char     *buf;
 time_t start, end;
 
 #define MAX_VSSETS      10
@@ -67,6 +69,10 @@ int main(int argc, char **argv)
         exit(0);
     }
 
+    new_pkt = malloc(sizeof(data_pkt));
+    new_pkt->machine_index = machine_index;
+    buf = malloc(sizeof(data_pkt));
+
     printf("\n>>num_msgs = %d, process_index = %d, num_processes = %d\n", num_msgs, machine_index, num_processes);
     
     Usage( argc, argv );
@@ -79,7 +85,20 @@ int main(int argc, char **argv)
         Bye();
     }
     printf("User: connected to %s with private group %s\n", Spread_name, Private_group );
-    
+
+    //creates the destination file for writing
+    //char file_name[ sizeof(machine_index) ];
+    char filename[] = "/tmp/ts_";
+    //char filename[] = "ts_";
+    //sprintf ( file_name, "%d", machine_index ); //converts machine_index to a string
+    strcat(filename, argv[2]);
+
+    //if ( (fw = fopen( (strcat(file_name,".txt") ) , "w") ) == NULL ) {
+    if ( (fw = fopen( (strcat(filename,".txt") ) , "w") ) == NULL ) {
+        perror("fopen");
+        exit(0);
+    }
+
     E_init();
     
     //sending a msg has lowest priority & reading a msg has highest priority
@@ -89,17 +108,6 @@ int main(int argc, char **argv)
     ret = SP_join( Mbox, group ); //make sure they SP_leave(Mbox, group); at end
     if( ret < 0 ) SP_error( ret );
     
-    //creates the destination file for writing
-    //char file_name[ sizeof(machine_index) ];
-    char filename[] = "/tmp/ts_";
-    //sprintf ( file_name, "%d", machine_index ); //converts machine_index to a string
-    strcat(filename, argv[2]);
-
-    //if ( (fw = fopen( (strcat(file_name,".txt") ) , "w") ) == NULL ) {
-    if ( (fw = fopen( (strcat(filename,".txt") ) , "w") ) == NULL ) {
-        perror("fopen");
-        exit(0);
-    }
     /* wait until theres num_proccesses on the SPREAD network before data transfers begin */
     E_handle_events();
 }
@@ -117,15 +125,13 @@ static  void    Send_message()
     {
         //send a packet msg
         packet_index++;
-        data_pkt *new_pkt = malloc(sizeof(data_pkt));
+        //data_pkt *new_pkt = malloc(sizeof(data_pkt));
         if (packet_index == num_msgs+1) new_pkt->tag = 1;
         else new_pkt->tag = 0;
-        new_pkt->machine_index = machine_index;
         new_pkt->pkt_index = packet_index;
         new_pkt->rand_num = rand() % 1000000 + 1; //generates random number 1 to 1 mil
         //printf("\nsent: pkt_index = %d,rand_num = %d", new_pkt->pkt_index, new_pkt->rand_num);
         int ret = SP_multicast( Mbox, AGREED_MESS, group, 2, sizeof(data_pkt), (const char*)new_pkt); //wants a const char
-        free(new_pkt);
         if( ret < 0 ){
             SP_error( ret );
             Bye();
@@ -135,7 +141,7 @@ static  void    Send_message()
         burst--;
         extra_msgs = 0;
     }
-    fflush(stdout);
+    //fflush(stdout);
 }
 
 static  void    Read_message() 
@@ -155,7 +161,6 @@ static  void    Read_message()
     char            members[MAX_MEMBERS][MAX_GROUP_NAME];
     int             ret;
 
-    char *buf = malloc(sizeof(data_pkt));
     //mess should be changed to a packet type!
     //max_groups(parameter 4), i set to 1 because we only have this group
     ret = SP_receive( Mbox, &service_type, sender, 10, &num_groups, target_groups, &mess_type, &endian_mismatch, sizeof(data_pkt), buf);
@@ -210,13 +215,12 @@ static  void    Read_message()
 
                 break;
             case 1: ; //final_pkt
-                //printf("final pkt\n");
+                printf("final pkt\n");
                 final_msgs++;
                 if (final_msgs == num_processes) Bye();
                 extra_msgs = WINDOW/(num_processes - final_msgs);
                 break;
         }
-        free(pkt);
 
     }else if( Is_membership_mess( service_type ) ) 
     {
@@ -287,7 +291,7 @@ static  void    Read_message()
     } else printf("received message of unknown message type 0x%x with ret %d\n", service_type, ret);
     //printf("\n");
     //printf("User> ");
-    fflush(stdout);
+    //fflush(stdout);
 
 }
 
@@ -302,6 +306,8 @@ static void Bye()
 {
     To_exit = 1;
     printf("\nBye.\n");
+    free(new_pkt);
+    free(buf);
     time(&end);
     printf("execution time = %f", difftime(end, start));
     SP_disconnect( Mbox );
