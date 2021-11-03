@@ -1,5 +1,5 @@
 #define MAX_MACHINES 10
-#define WINDOW 15
+#define WINDOW 30
 
 #include "sp.h"
 #include "packets.h"
@@ -22,6 +22,9 @@ static  int     num_msgs;
 static  int     machine_index;
 static  int     final_msgs = 0; //num of final msgs recieved
 static  int     recv_msgs = 0; //num of final msgs recieved
+static  int     extra_msgs = 0; //num of final msgs recieved
+
+time_t start, end;
 
 #define MAX_VSSETS      10
 #define MAX_MESSLEN     102400 //should probably be smaller/ the size of our packets
@@ -87,9 +90,13 @@ int main(int argc, char **argv)
     if( ret < 0 ) SP_error( ret );
     
     //creates the destination file for writing
-    char file_name[ sizeof(machine_index) ];
-    sprintf ( file_name, "%d", machine_index ); //converts machine_index to a string
-    if ( (fw = fopen( (strcat(file_name,".txt") ) , "w") ) == NULL ) {
+    //char file_name[ sizeof(machine_index) ];
+    char filename[] = "/tmp/ts_";
+    //sprintf ( file_name, "%d", machine_index ); //converts machine_index to a string
+    strcat(filename, argv[2]);
+
+    //if ( (fw = fopen( (strcat(file_name,".txt") ) , "w") ) == NULL ) {
+    if ( (fw = fopen( (strcat(filename,".txt") ) , "w") ) == NULL ) {
         perror("fopen");
         exit(0);
     }
@@ -101,8 +108,11 @@ static  void    Send_message()
 {
     srand ( time(NULL) ); //init random num generator
 
-    //send a burst of messages
-    int burst = WINDOW;
+    int burst = 1;
+
+    //send first burst of messages
+    if (transfer) burst = WINDOW;
+
     while ( packet_index+1 <= num_msgs+1 && burst > 0) 
     {
         //send a packet msg
@@ -123,6 +133,7 @@ static  void    Send_message()
             //printf("\nI sent a pkt, pkt_index = %d\n", new_pkt->pkt_index);
         }
         burst--;
+        extra_msgs = 0;
     }
     fflush(stdout);
 }
@@ -193,11 +204,16 @@ static  void    Read_message()
                 char buf_write[sizeof(pkt->rand_num)];
                 sprintf(buf_write, "%d", pkt->rand_num);
                 fprintf(fw, "%2d, %8d, %8d\n", pkt->machine_index, pkt->pkt_index, pkt->rand_num);
+                
+                //we have recieved an ack and can slide our window
+                if(pkt->machine_index == machine_index) Send_message();
+
                 break;
             case 1: ; //final_pkt
                 //printf("final pkt\n");
                 final_msgs++;
                 if (final_msgs == num_processes) Bye();
+                extra_msgs = WINDOW/(num_processes - final_msgs);
                 break;
         }
         free(pkt);
@@ -254,10 +270,12 @@ static  void    Read_message()
             //only when there are membership changes??
             if ( num_groups == num_processes ) 
             {
+                time(&start);
                 printf("\nGROUP HAS CORRECT(%d) MEMBERS & CAN NOW BEGIN TRANSMITTING DATA\n", num_groups);
                 transfer = 1;
                 //first burst
                 Send_message();
+                transfer = 0;
             }
 
         } else if (Is_transition_mess(   service_type ) ) {
@@ -270,15 +288,6 @@ static  void    Read_message()
     //printf("\n");
     //printf("User> ");
     fflush(stdout);
-
-    //checks if we have num_processes yet and can begin transferring data
-    if (transfer && recv_msgs == WINDOW * (num_processes-final_msgs)) {    
-        recv_msgs = 0;
-        //this should happen when the network 'has room'
-        Send_message();
-        //send burst of packets, then turn our transfer to 0 -> then once we receive, we turn our transfer to 1 to trigger this
-        //call send_msg somehow ...
-    }
 
 }
 
@@ -293,6 +302,8 @@ static void Bye()
 {
     To_exit = 1;
     printf("\nBye.\n");
+    time(&end);
+    printf("execution time = %f", difftime(end, start));
     SP_disconnect( Mbox );
     exit(0);
 }
