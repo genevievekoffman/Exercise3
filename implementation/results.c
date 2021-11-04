@@ -23,6 +23,14 @@ next change: got rid of all our mallocs (we were allocating dynamic memory every
 so now we just have one malloc in the start and free it at the end and we read the pkt into it
 time = 94 s
 
+next change: stopped using E-handle events and called read_msg in a infinite for loop
+time = 87 s
+
+
+last change:
+our payload was at first array of length 1300 but then we changed this to 325 (because 4*325=1300 bytes)
+time = 23 sec
+time = 24 s
 Our design/flow control:
     First we wait for all processes to join before beginning the communication. 
     Every time we receive a membership message, we check to see if the number of processes that have joined this group (the information Spread gives us) equals num_processes. Since Spread will deliver the membership msg to all participants simultaneously, we are guaranteed to all begin at the same time.
